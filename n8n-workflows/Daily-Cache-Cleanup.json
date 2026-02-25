@@ -1,0 +1,1093 @@
+{
+  "name": "Daily Cache Cleanup",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1696,
+        -768
+      ],
+      "id": "89e8be24-ef60-4b15-9ae8-3002faa2a55e",
+      "name": "Respond to Webhook",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// CONSOLIDATED DATA QUALITY ASSESSMENT NODE - PERFORMANCE OPTIMIZED\n// ============================================================================\n\n// ============================================================================\n// STEP 1: EXTRACT & FLATTEN DATA\n// ============================================================================\n\nlet rawRecords = [];\n\nfor (const item of items) {\n  const payload = item.json;\n  if (Array.isArray(payload)) {\n    rawRecords.push(...payload);\n  } else if (typeof payload === 'object' && payload !== null) {\n    const arrayField = Object.values(payload).find(v => Array.isArray(v));\n    rawRecords.push(...(arrayField || [payload]));\n  }\n}\n\nif (!rawRecords.length) {\n  throw new Error('No usable records found in API response');\n}\n\n// Optimized flatten function\nfunction flattenObject(obj, prefix = '') {\n  const result = {};\n  for (const [key, value] of Object.entries(obj)) {\n    const newKey = prefix ? `${prefix}.${key}` : key;\n    if (value === null || value === undefined) {\n      result[newKey] = null;\n    } else if (Array.isArray(value)) {\n      result[newKey] = value;\n    } else if (typeof value === 'object') {\n      Object.assign(result, flattenObject(value, newKey));\n    } else {\n      result[newKey] = value;\n    }\n  }\n  return result;\n}\n\nconst flattenedData = rawRecords.map(r => flattenObject(r));\nconst totalRecords = flattenedData.length;\n\n// ============================================================================\n// STEP 2-4: COMBINED METRICS CALCULATION (SINGLE PASS)\n// ============================================================================\n\nconst completenessByField = {};\nconst consistencyMetrics = {};\nconst statisticalMetrics = {};\nconst allFields = new Set();\n\n// First pass: collect all fields\nfor (const record of flattenedData) {\n  Object.keys(record).forEach(f => allFields.add(f));\n}\n\n// Second pass: calculate ALL metrics in one loop (major optimization)\nfor (const field of allFields) {\n  let presentCount = 0;\n  let missingCount = 0;\n  const typeCounts = {};\n  const numericValues = [];\n\n  // Single loop through all records for this field\n  for (const record of flattenedData) {\n    const v = record[field];\n    \n    // Completeness check\n    if (v === null || v === undefined || (typeof v === 'string' && v.trim() === '')) {\n      missingCount++;\n    } else {\n      presentCount++;\n      \n      // Consistency tracking\n      const type = Array.isArray(v) ? 'array' : typeof v;\n      typeCounts[type] = (typeCounts[type] || 0) + 1;\n      \n      // Statistical collection (for numeric fields)\n      if (type === 'number' && isFinite(v)) {\n        numericValues.push(v);\n      }\n    }\n  }\n\n  // Calculate percentages once\n  const presentPercentage = Number((presentCount / totalRecords * 100).toFixed(2));\n  const missingPercentage = Number((missingCount / totalRecords * 100).toFixed(2));\n  \n  // Get dominant type\n  const types = Object.keys(typeCounts);\n  const dominantType = types[0] || 'unknown';\n  const dominantCount = Math.max(...Object.values(typeCounts), 0);\n  const totalNonNull = presentCount;\n  const consistencyPercentage = totalNonNull > 0 ? Number((dominantCount / totalNonNull * 100).toFixed(2)) : 100;\n  const isConsistent = types.length <= 1;\n\n  // Store completeness metrics\n  completenessByField[field] = {\n    field,\n    presentPercentage,\n    missingPercentage,\n    presentCount,\n    missingCount,\n    dataType: dominantType\n  };\n\n  // Store consistency metrics\n  consistencyMetrics[field] = {\n    field,\n    dominantType,\n    dataTypesFound: types,\n    consistencyPercentage,\n    isConsistent\n  };\n\n  // Store statistical metrics (if numeric)\n  if (numericValues.length > 0) {\n    const sum = numericValues.reduce((s, x) => s + x, 0);\n    const mean = sum / numericValues.length;\n    const min = Math.min(...numericValues);\n    const max = Math.max(...numericValues);\n\n    statisticalMetrics[field] = {\n      field,\n      mean: Number(mean.toFixed(2)),\n      min: Number(min.toFixed(2)),\n      max: Number(max.toFixed(2)),\n      count: numericValues.length\n    };\n  }\n}\n\n// ============================================================================\n// STEP 3: AGGREGATE SCORES (OPTIMIZED)\n// ============================================================================\n\nconst totalCells = totalRecords * allFields.size;\nconst totalPresentCount = Object.values(completenessByField).reduce((s, f) => s + f.presentCount, 0);\nconst overallCompleteness = Number((totalPresentCount / totalCells * 100).toFixed(2));\nconst criticalFieldsCount = Object.values(completenessByField).filter(f => f.presentPercentage < 50).length;\nconst consistentFieldsCount = Object.values(consistencyMetrics).filter(f => f.isConsistent).length;\nconst overallConsistency = Number((consistentFieldsCount / allFields.size * 100).toFixed(2));\n\n// Uniqueness check (optimized with early exit potential)\nconst recordMap = new Map();\nfor (const record of flattenedData) {\n  const key = JSON.stringify(record);\n  recordMap.set(key, (recordMap.get(key) || 0) + 1);\n}\nconst duplicateRecords = Array.from(recordMap.values()).filter(c => c > 1).length;\nconst uniquenessScore = Number(Math.max(0, 100 - ((duplicateRecords / totalRecords) * 100)).toFixed(2));\n\nconst overallQualityScore = Number((\n  overallCompleteness * 0.4 +\n  overallConsistency * 0.3 +\n  uniquenessScore * 0.2 +\n  overallConsistency * 0.1\n).toFixed(2));\n\n// ============================================================================\n// STEP 4: FRONTEND PREPARATION (PRE-CALCULATED)\n// ============================================================================\n\n// Pre-sort and transform completeness data (single operation)\nconst completenessArray = Object.values(completenessByField);\nconst fieldCompleteness = completenessArray\n  .sort((a, b) => b.missingPercentage - a.missingPercentage)\n  .map(f => ({\n    name: f.field,\n    completeness: f.presentPercentage,\n    missing: f.missingPercentage,\n    dataType: f.dataType,\n    presentCount: f.presentCount,\n    missingCount: f.missingCount\n  }));\n\n// KPIs (direct assignment, no lookups)\nconst kpis = {\n  qualityScore: overallQualityScore,\n  totalRecords,\n  totalFields: allFields.size,\n  completenessScore: overallCompleteness,\n  consistencyScore: overallConsistency,\n  uniquenessScore,\n  validityScore: overallConsistency,\n  criticalFields: criticalFieldsCount\n};\n\n// Radar chart data (pre-built array)\nconst qualityScores = [\n  { dimension: 'Completeness', score: overallCompleteness },\n  { dimension: 'Consistency', score: overallConsistency },\n  { dimension: 'Uniqueness', score: uniquenessScore },\n  { dimension: 'Validity', score: overallConsistency }\n];\n\n// Data type distribution (optimized reduce)\nconst typeCountMap = {};\nfor (const metric of Object.values(consistencyMetrics)) {\n  typeCountMap[metric.dominantType] = (typeCountMap[metric.dominantType] || 0) + 1;\n}\nconst dataTypeDistribution = Object.entries(typeCountMap).map(([name, value]) => ({ name, value }));\n\n// Completeness distribution (single pass bucketing)\nconst bucketCounts = [0, 0, 0, 0, 0]; // 0-20, 21-40, 41-60, 61-80, 81-100\nfor (const f of completenessArray) {\n  const pct = f.presentPercentage;\n  if (pct <= 20) bucketCounts[0]++;\n  else if (pct <= 40) bucketCounts[1]++;\n  else if (pct <= 60) bucketCounts[2]++;\n  else if (pct <= 80) bucketCounts[3]++;\n  else bucketCounts[4]++;\n}\n\nconst completenessDistribution = [\n  { range: '0-20%', count: bucketCounts[0] },\n  { range: '21-40%', count: bucketCounts[1] },\n  { range: '41-60%', count: bucketCounts[2] },\n  { range: '61-80%', count: bucketCounts[3] },\n  { range: '81-100%', count: bucketCounts[4] }\n];\n\n// ============================================================================\n// FINAL OUTPUT\n// ============================================================================\n\nreturn [{\n  json: {\n    kpis,\n    fieldCompleteness,\n    qualityScores,\n    dataTypeDistribution,\n    completenessDistribution\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1472,
+        -768
+      ],
+      "id": "b15288d9-77e1-432d-98e9-a65b5ce3d2f7",
+      "name": "Dashboard Creation",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.body.apiUrl }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $json.token ? 'Bearer ' + $json.token : undefined }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {}
+          },
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1296,
+        -768
+      ],
+      "id": "760403b5-33da-4954-a980-540e9b0f7b93",
+      "name": "HTTP Request1",
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "data-quality-dashboard",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        1056,
+        -768
+      ],
+      "id": "91364d08-a65e-4b06-8284-80366ee81a98",
+      "name": "Webhook1",
+      "webhookId": "51654b52-4255-4c30-9bfa-31685927bf3e",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// CONSOLIDATED DATA QUALITY ASSESSMENT NODE - PRODUCTION VERSION\n// Combined: Flatten, Completeness, Statistics, Consistency, \n//           Uniqueness, Structural, Aggregation & Frontend Prep\n// ============================================================================\n\n// ============================================================================\n// STEP 1: EXTRACT & FLATTEN DATA\n// ============================================================================\n\nlet rawRecords = [];\n\nfor (const item of items) {\n  const payload = item.json;\n\n  if (Array.isArray(payload)) {\n    rawRecords.push(...payload);\n  } else if (typeof payload === 'object' && payload !== null) {\n    const arrayField = Object.values(payload).find(v => Array.isArray(v));\n    if (arrayField) {\n      rawRecords.push(...arrayField);\n    } else {\n      rawRecords.push(payload);\n    }\n  }\n}\n\nif (!rawRecords.length) {\n  throw new Error('No usable records found in API response');\n}\n\nfunction flattenObject(obj, prefix = '') {\n  const result = {};\n  for (const [key, value] of Object.entries(obj)) {\n    const newKey = prefix ? `${prefix}.${key}` : key;\n    if (value === null || value === undefined) {\n      result[newKey] = null;\n    } else if (Array.isArray(value)) {\n      result[newKey] = value;\n    } else if (typeof value === 'object') {\n      Object.assign(result, flattenObject(value, newKey));\n    } else {\n      result[newKey] = value;\n    }\n  }\n  return result;\n}\n\nconst flattenedData = rawRecords.map(r => flattenObject(r));\nconst allFields = new Set();\nfor (const record of flattenedData) {\n  Object.keys(record).forEach(f => allFields.add(f));\n}\n\nconst totalRecords = flattenedData.length;\n\n// ============================================================================\n// STEP 2: COMPLETENESS METRICS\n// ============================================================================\n\nconst completenessByField = {};\n\nfor (const field of allFields) {\n  let present = 0;\n  let missing = 0;\n\n  for (const record of flattenedData) {\n    const v = record[field];\n    if (v === null || v === undefined || (typeof v === 'string' && v.trim() === '')) {\n      missing++;\n    } else {\n      present++;\n    }\n  }\n\n  completenessByField[field] = {\n    field,\n    presentPercentage: Number((present / totalRecords * 100).toFixed(2)),\n    missingPercentage: Number((missing / totalRecords * 100).toFixed(2)),\n    presentCount: present,\n    missingCount: missing,\n    dataType: 'unknown'\n  };\n}\n\nconst totalCells = totalRecords * allFields.size;\nconst totalPresentCount = Object.values(completenessByField).reduce((s, f) => s + f.presentCount, 0);\nconst overallCompleteness = Number((totalPresentCount / totalCells * 100).toFixed(2));\nconst criticalFieldsCount = Object.values(completenessByField).filter(f => f.presentPercentage < 50).length;\n\n// ============================================================================\n// STEP 3: STATISTICAL METRICS (NUMERIC)\n// ============================================================================\n\nconst mean = v => v.length ? v.reduce((s, x) => s + x, 0) / v.length : 0;\nconst statisticalMetrics = {};\n\nfor (const field of allFields) {\n  const values = flattenedData\n    .map(r => r[field])\n    .filter(v => typeof v === 'number' && isFinite(v));\n\n  if (!values.length) continue;\n\n  const avg = mean(values);\n  statisticalMetrics[field] = {\n    field,\n    mean: Number(avg.toFixed(2)),\n    min: Number(Math.min(...values).toFixed(2)),\n    max: Number(Math.max(...values).toFixed(2)),\n    count: values.length\n  };\n}\n\n// ============================================================================\n// STEP 4: CONSISTENCY METRICS\n// ============================================================================\n\nconst consistencyMetrics = {};\nlet consistentFieldsCount = 0;\n\nfor (const field of allFields) {\n  const typeCounts = {};\n  for (const record of flattenedData) {\n    const v = record[field];\n    if (v === null || v === undefined) continue;\n    const type = Array.isArray(v) ? 'array' : typeof v;\n    typeCounts[type] = (typeCounts[type] || 0) + 1;\n    completenessByField[field].dataType = type;\n  }\n\n  const types = Object.keys(typeCounts);\n  const dominantCount = Math.max(...Object.values(typeCounts), 0);\n  const totalNonNull = totalRecords - completenessByField[field].missingCount;\n  \n  const pct = totalNonNull > 0 ? Number((dominantCount / totalNonNull * 100).toFixed(2)) : 100;\n  if (types.length <= 1) consistentFieldsCount++;\n\n  consistencyMetrics[field] = {\n    field,\n    dominantType: types[0] || 'unknown',\n    dataTypesFound: types,\n    consistencyPercentage: pct,\n    isConsistent: types.length <= 1\n  };\n}\n\nconst overallConsistency = Number((consistentFieldsCount / allFields.size * 100).toFixed(2));\n\n// ============================================================================\n// STEP 5: UNIQUENESS METRICS\n// ============================================================================\n\nconst recordMap = new Map();\nflattenedData.forEach(r => {\n  const key = JSON.stringify(r);\n  recordMap.set(key, (recordMap.get(key) || 0) + 1);\n});\n\nconst duplicateRecords = Array.from(recordMap.values()).filter(c => c > 1).length;\nconst uniquenessScore = Number(Math.max(0, 100 - ((duplicateRecords / totalRecords) * 100)).toFixed(2));\n\n// ============================================================================\n// STEP 6: AGGREGATE SCORES\n// ============================================================================\n\nconst overallQualityScore = Number((\n  overallCompleteness * 0.4 +\n  overallConsistency * 0.3 +\n  uniquenessScore * 0.2 +\n  overallConsistency * 0.1\n).toFixed(2));\n\n// ============================================================================\n// STEP 7: FLATTEN TO ROWS\n// ============================================================================\n\nconst rows = [];\nconst push = (Section, Subsection, Metric, Value) => rows.push({ Section, Subsection, Metric, Value });\n\npush('Executive Summary', 'Quality Scores', 'Overall Data Quality Score', overallQualityScore);\npush('Executive Summary', 'Quality Scores', 'Completeness Score', overallCompleteness);\npush('Executive Summary', 'Quality Scores', 'Consistency Score', overallConsistency);\npush('Executive Summary', 'Quality Scores', 'Uniqueness Score', uniquenessScore);\npush('Executive Summary', 'Quality Scores', 'Validity Score', overallConsistency);\npush('Executive Summary', 'Overview', 'Total Records Analyzed', totalRecords);\npush('Executive Summary', 'Overview', 'Total Fields Analyzed', allFields.size);\npush('Executive Summary', 'Key Findings', 'Critical Fields (<50% complete)', criticalFieldsCount);\n\nObject.values(completenessByField).forEach(f => {\n  push('Completeness', f.field, 'Completeness %', f.presentPercentage);\n  push('Completeness', f.field, 'Missing %', f.missingPercentage);\n  push('Completeness', f.field, 'Data Type', f.dataType);\n});\n\nObject.values(consistencyMetrics).forEach(f => {\n  push('Consistency', f.field, 'Dominant Type', f.dominantType);\n});\n\n// ============================================================================\n// STEP 8: FRONTEND PREPARATION\n// ============================================================================\n\nconst byMetric = (section, metric) =>\n  rows.find(r => r.Section === section && r.Metric === metric)?.Value ?? 0;\n\nconst kpis = {\n  qualityScore: Number(byMetric('Executive Summary', 'Overall Data Quality Score')),\n  totalRecords: Number(byMetric('Executive Summary', 'Total Records Analyzed')),\n  totalFields: Number(byMetric('Executive Summary', 'Total Fields Analyzed')),\n  completenessScore: Number(byMetric('Executive Summary', 'Completeness Score')),\n  consistencyScore: Number(byMetric('Executive Summary', 'Consistency Score')),\n  uniquenessScore: Number(byMetric('Executive Summary', 'Uniqueness Score')),\n  validityScore: Number(byMetric('Executive Summary', 'Validity Score')),\n  criticalFields: Number(byMetric('Executive Summary', 'Critical Fields (<50% complete)'))\n};\n\n// Show ALL fields sorted by missing percentage\nconst topMissingFields = Object.values(completenessByField)\n  .sort((a, b) => b.missingPercentage - a.missingPercentage)\n  .map(f => ({\n    name: f.field,\n    value: f.missingPercentage\n  }));\n\nconst qualityScores = [\n  { dimension: 'Completeness', score: kpis.completenessScore },\n  { dimension: 'Consistency', score: kpis.consistencyScore },\n  { dimension: 'Uniqueness', score: kpis.uniquenessScore },\n  { dimension: 'Validity', score: kpis.validityScore }\n];\n\nconst dataTypeDistribution = Object.entries(\n  rows\n    .filter(r => r.Section === 'Consistency' && r.Metric === 'Dominant Type')\n    .reduce((acc, r) => {\n      acc[r.Value] = (acc[r.Value] || 0) + 1;\n      return acc;\n    }, {})\n).map(([name, value]) => ({ name, value }));\n\nconst completenessBuckets = [\n  { range: '0-20%', min: 0, max: 20 },\n  { range: '21-40%', min: 21, max: 40 },\n  { range: '41-60%', min: 41, max: 60 },\n  { range: '61-80%', min: 61, max: 80 },\n  { range: '81-100%', min: 81, max: 100 }\n];\n\nconst completenessDistribution = completenessBuckets.map(b => ({\n  range: b.range,\n  count: Object.values(completenessByField).filter(f => f.presentPercentage >= b.min && f.presentPercentage <= b.max).length\n}));\n\n// ============================================================================\n// FINAL OUTPUT\n// ============================================================================\n\nreturn [{\n  json: {\n    kpis,\n    topMissingFields,\n    qualityScores,\n    dataTypeDistribution,\n    completenessDistribution\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        -208
+      ],
+      "id": "ac03dc1f-41de-42f7-a902-ecf259b77edd",
+      "name": "Prod",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// CONSOLIDATED DATA QUALITY ASSESSMENT NODE\n// Combines: Extract, Flatten, Completeness, Statistics, Consistency, \n//           Uniqueness, Structural, Aggregation, Refinement & Frontend Prep\n// ============================================================================\n\n// ============================================================================\n// STEP 1: EXTRACT & FLATTEN DATA\n// ============================================================================\n\nlet records = [];\n\nfor (const item of items) {\n  const payload = item.json;\n\n  if (Array.isArray(payload)) {\n    records.push(...payload);\n  } else if (typeof payload === 'object' && payload !== null) {\n    // Try to auto-detect array-like fields\n    const arrayField = Object.values(payload).find(v => Array.isArray(v));\n    \n    if (arrayField) {\n      records.push(...arrayField);\n    } else {\n      // Single object → treat as one record\n      records.push(payload);\n    }\n  }\n}\n\n// Safety check\nif (!records.length) {\n  throw new Error('No usable records found in API response');\n}\n\n// Flatten helper\nfunction flattenObject(obj, prefix = '') {\n  const result = {};\n\n  for (const [key, value] of Object.entries(obj)) {\n    const newKey = prefix ? `${prefix}.${key}` : key;\n\n    if (value === null || value === undefined) {\n      result[newKey] = null;\n    } else if (Array.isArray(value)) {\n      result[newKey] = value;\n    } else if (typeof value === 'object') {\n      Object.assign(result, flattenObject(value, newKey));\n    } else {\n      result[newKey] = value;\n    }\n  }\n\n  return result;\n}\n\n// Flatten all records\nconst flattenedData = records.map(r => flattenObject(r));\n\n// Collect all unique fields\nconst allFields = new Set();\nfor (const record of flattenedData) {\n  Object.keys(record).forEach(f => allFields.add(f));\n}\n\nconst totalRecords = flattenedData.length;\n\n// ============================================================================\n// STEP 2: COMPLETENESS METRICS\n// ============================================================================\n\nfunction isMissing(value) {\n  return (\n    value === null ||\n    value === undefined ||\n    (typeof value === 'string' && value.trim() === '')\n  );\n}\n\nconst completenessByField = {};\n\nfor (const field of allFields) {\n  let present = 0;\n  let missing = 0;\n  let nullCount = 0;\n  let undefinedCount = 0;\n  let emptyStringCount = 0;\n\n  for (const record of flattenedData) {\n    const v = record[field];\n\n    if (v === null) {\n      nullCount++;\n      missing++;\n    } else if (v === undefined) {\n      undefinedCount++;\n      missing++;\n    } else if (typeof v === 'string' && v.trim() === '') {\n      emptyStringCount++;\n      missing++;\n    } else {\n      present++;\n    }\n  }\n\n  completenessByField[field] = {\n    field,\n    totalRecords,\n    presentCount: present,\n    missingCount: missing,\n    presentPercentage: +(present / totalRecords * 100).toFixed(2),\n    missingPercentage: +(missing / totalRecords * 100).toFixed(2),\n    breakdown: {\n      nullCount,\n      undefinedCount,\n      emptyStringCount\n    }\n  };\n}\n\nconst totalCells = totalRecords * allFields.size;\nconst totalPresent = Object.values(completenessByField)\n  .reduce((s, f) => s + f.presentCount, 0);\n\nconst overallCompleteness = +(totalPresent / totalCells * 100).toFixed(2);\n\nconst metricsArray = Object.values(completenessByField);\n\nconst fieldsWithMissing = metricsArray\n  .filter(f => f.missingCount > 0)\n  .sort((a, b) => b.missingPercentage - a.missingPercentage);\n\nconst completeFields = metricsArray\n  .filter(f => f.missingCount === 0);\n\n// ============================================================================\n// STEP 3: STATISTICAL METRICS & ATTRIBUTE COMPLETENESS\n// ============================================================================\n\nconst mean = v => v.length ? v.reduce((s, x) => s + x, 0) / v.length : 0;\n\nconst median = v => {\n  if (!v.length) return 0;\n  const s = [...v].sort((a, b) => a - b);\n  const m = Math.floor(s.length / 2);\n  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;\n};\n\nconst variance = v => {\n  if (!v.length) return 0;\n  const avg = mean(v);\n  return v.reduce((s, x) => s + (x - avg) ** 2, 0) / v.length;\n};\n\nconst stdDev = v => Math.sqrt(variance(v));\n\nconst quartiles = v => {\n  if (!v.length) return { q1: 0, q2: 0, q3: 0 };\n  const s = [...v].sort((a, b) => a - b);\n  return {\n    q1: s[Math.floor(s.length * 0.25)] || 0,\n    q2: s[Math.floor(s.length * 0.5)] || 0,\n    q3: s[Math.floor(s.length * 0.75)] || 0\n  };\n};\n\nconst mode = v => {\n  if (!v.length) return null;\n  const freq = {};\n  v.forEach(x => freq[x] = (freq[x] || 0) + 1);\n  return +Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0];\n};\n\nconst detectType = values => {\n  const nonNull = values.filter(v => v != null);\n  if (!nonNull.length) return 'unknown';\n  \n  const sample = nonNull[0];\n  if (typeof sample === 'number') return 'number';\n  if (typeof sample === 'boolean') return 'boolean';\n  if (Array.isArray(sample)) return 'array';\n  if (typeof sample === 'object') return 'object';\n  return 'string';\n};\n\n// Attribute completeness\nconst attributeCompleteness = [];\n\nfor (const field of allFields) {\n  const values = flattenedData.map(r => r[field]);\n  const nonNullCount = values.filter(v => v != null && v !== '').length;\n  const completeness = (nonNullCount / totalRecords * 100).toFixed(2);\n  \n  attributeCompleteness.push({\n    field,\n    completeness: +completeness,\n    nonNullCount,\n    missingCount: totalRecords - nonNullCount,\n    dataType: detectType(values)\n  });\n}\n\nattributeCompleteness.sort((a, b) => a.completeness - b.completeness);\n\n// Statistical metrics\nconst statisticalMetrics = {};\nlet numericFieldCount = 0;\n\nfor (const field of allFields) {\n  const values = flattenedData\n    .map(r => r[field])\n    .filter(v => typeof v === 'number' && isFinite(v));\n\n  if (!values.length) continue;\n\n  numericFieldCount++;\n\n  const avg = mean(values);\n  const std = stdDev(values);\n  const q = quartiles(values);\n  const min = Math.min(...values);\n  const max = Math.max(...values);\n\n  statisticalMetrics[field] = {\n    field,\n    count: values.length,\n    mean: +avg.toFixed(2),\n    median: +median(values).toFixed(2),\n    mode: mode(values),\n    variance: +variance(values).toFixed(2),\n    standardDeviation: +std.toFixed(2),\n    coefficientOfVariation: avg ? +(std / avg * 100).toFixed(2) : 0,\n    min: +min.toFixed(2),\n    max: +max.toFixed(2),\n    range: +(max - min).toFixed(2),\n    q1: +q.q1.toFixed(2),\n    q2: +q.q2.toFixed(2),\n    q3: +q.q3.toFixed(2),\n    iqr: +(q.q3 - q.q1).toFixed(2)\n  };\n}\n\nconst avgCompleteness = +(\n  attributeCompleteness.reduce((sum, f) => sum + f.completeness, 0) / \n  attributeCompleteness.length\n).toFixed(2);\n\nconst criticalFields = attributeCompleteness.filter(f => f.completeness < 50);\n\n// ============================================================================\n// STEP 4: CONSISTENCY METRICS\n// ============================================================================\n\nconst consistencyMetrics = {};\n\nfor (const field of allFields) {\n  const typeCounts = {};\n  let nullCount = 0;\n\n  for (const record of flattenedData) {\n    const value = record[field];\n\n    if (value === null || value === undefined) {\n      nullCount++;\n      continue;\n    }\n\n    const type = Array.isArray(value) ? 'array' : typeof value;\n    typeCounts[type] = (typeCounts[type] || 0) + 1;\n  }\n\n  const totalNonNull = totalRecords - nullCount;\n  const types = Object.keys(typeCounts);\n\n  let dominantType = 'unknown';\n  let dominantCount = 0;\n\n  for (const [t, c] of Object.entries(typeCounts)) {\n    if (c > dominantCount) {\n      dominantType = t;\n      dominantCount = c;\n    }\n  }\n\n  const consistencyPercentage =\n    totalNonNull > 0 ? +(dominantCount / totalNonNull * 100).toFixed(2) : 100;\n\n  consistencyMetrics[field] = {\n    field,\n    dataTypesFound: types,\n    dominantType,\n    typeDistribution: typeCounts,\n    consistencyPercentage,\n    isConsistent: types.length <= 1,\n    mixedTypeCount: types.length > 1 ? totalNonNull - dominantCount : 0\n  };\n}\n\nconst consistencyMetricsArray = Object.values(consistencyMetrics);\n\nconst consistentFields = consistencyMetricsArray.filter(f => f.isConsistent);\nconst inconsistentFields = consistencyMetricsArray\n  .filter(f => !f.isConsistent)\n  .sort((a, b) => a.consistencyPercentage - b.consistencyPercentage);\n\nconst overallConsistency = +(\n  consistentFields.length / allFields.size * 100\n).toFixed(2);\n\n// ============================================================================\n// STEP 5: UNIQUENESS METRICS\n// ============================================================================\n\nconst uniquenessMetrics = {};\n\nfor (const field of allFields) {\n  const values = [];\n  const uniqueSet = new Set();\n\n  for (const record of flattenedData) {\n    const v = record[field];\n    if (v === null || v === undefined) continue;\n\n    const normalized =\n      typeof v === 'object' ? JSON.stringify(v) : String(v);\n\n    values.push(normalized);\n    uniqueSet.add(normalized);\n  }\n\n  const totalValues = values.length;\n  const uniqueValues = uniqueSet.size;\n  const duplicateValues = totalValues - uniqueValues;\n  const cardinalityPercentage =\n    totalValues > 0 ? +(uniqueValues / totalValues * 100).toFixed(2) : 0;\n\n  const frequency = {};\n  values.forEach(v => frequency[v] = (frequency[v] || 0) + 1);\n\n  const topValues = Object.entries(frequency)\n    .sort((a, b) => b[1] - a[1])\n    .slice(0, 10)\n    .map(([value, count]) => ({\n      value: value.length > 50 ? value.slice(0, 50) + '...' : value,\n      count,\n      percentage: +(count / totalValues * 100).toFixed(2)\n    }));\n\n  const shouldBeUnique =\n    field.toLowerCase().includes('id') || cardinalityPercentage > 95;\n\n  uniquenessMetrics[field] = {\n    field,\n    totalValues,\n    uniqueValues,\n    duplicateValues,\n    cardinalityPercentage,\n    isUnique: totalValues > 0 && uniqueValues === totalValues,\n    shouldBeUnique,\n    topValues\n  };\n}\n\n// Duplicate record detection\nconst recordMap = new Map();\n\nflattenedData.forEach((record, idx) => {\n  const key = JSON.stringify(record);\n  if (!recordMap.has(key)) recordMap.set(key, []);\n  recordMap.get(key).push(idx);\n});\n\nconst duplicateRecords = Array.from(recordMap.values())\n  .filter(indices => indices.length > 1);\n\n// ============================================================================\n// STEP 6: STRUCTURAL METRICS\n// ============================================================================\n\nfunction analyzeStructure(obj, depth = 0) {\n  let maxDepth = depth;\n  let objectCount = 0;\n  let arrayCount = 0;\n  let primitiveCount = 0;\n\n  if (!obj || typeof obj !== 'object') {\n    return { maxDepth, objectCount, arrayCount, primitiveCount: 1 };\n  }\n\n  for (const value of Object.values(obj)) {\n    if (value === null || value === undefined) {\n      primitiveCount++;\n    } else if (Array.isArray(value)) {\n      arrayCount++;\n      if (value.length && typeof value[0] === 'object') {\n        const r = analyzeStructure(value[0], depth + 1);\n        maxDepth = Math.max(maxDepth, r.maxDepth);\n        objectCount += r.objectCount;\n        arrayCount += r.arrayCount;\n        primitiveCount += r.primitiveCount;\n      }\n    } else if (typeof value === 'object') {\n      objectCount++;\n      const r = analyzeStructure(value, depth + 1);\n      maxDepth = Math.max(maxDepth, r.maxDepth);\n      objectCount += r.objectCount;\n      arrayCount += r.arrayCount;\n      primitiveCount += r.primitiveCount;\n    } else {\n      primitiveCount++;\n    }\n  }\n\n  return { maxDepth, objectCount, arrayCount, primitiveCount };\n}\n\nconst structure =\n  records.length > 0\n    ? analyzeStructure(records[0])\n    : { maxDepth: 0, objectCount: 0, arrayCount: 0, primitiveCount: 0 };\n\nconst fieldCatalog = {};\n\nfor (const field of allFields) {\n  const samples = flattenedData\n    .slice(0, 100)\n    .map(r => r[field])\n    .filter(v => v !== null && v !== undefined);\n\n  const sample = samples[0];\n  const isArray = Array.isArray(sample);\n  const isNested = field.includes('.');\n  const dataType = isArray ? 'array' : typeof sample;\n\n  fieldCatalog[field] = {\n    field,\n    fullPath: field,\n    dataType,\n    isNested,\n    isArray,\n    nestingLevel: field.split('.').length - 1,\n    sampleValue:\n      sample !== undefined\n        ? (typeof sample === 'object'\n            ? JSON.stringify(sample).slice(0, 100)\n            : String(sample).slice(0, 100))\n        : 'N/A'\n  };\n}\n\nconst catalogValues = Object.values(fieldCatalog);\n\nconst simpleFields = catalogValues.filter(f => !f.isNested && !f.isArray);\nconst nestedFields = catalogValues.filter(f => f.isNested);\nconst arrayFields = catalogValues.filter(f => f.isArray);\n\n// ============================================================================\n// STEP 7: AGGREGATE ALL METRICS\n// ============================================================================\n\nconst num = v => (typeof v === 'number' && isFinite(v) ? v : 0);\n\nconst completenessScore = avgCompleteness;\nconst consistencyScore = overallConsistency;\nconst validityScore = consistencyScore;\n\nconst duplicateCount = duplicateRecords.length;\nconst duplicatePercentage =\n  totalRecords > 0 ? (duplicateCount / totalRecords) * 100 : 0;\n\nconst uniquenessScore = Math.max(0, 100 - duplicatePercentage);\n\nconst overallQualityScore = +(\n  completenessScore * 0.4 +\n  consistencyScore * 0.3 +\n  uniquenessScore * 0.2 +\n  validityScore * 0.1\n).toFixed(2);\n\nconst aggregatedReport = {\n  reportMetadata: {\n    generatedAt: new Date().toISOString(),\n    reportType: 'Data Quality Assessment',\n    dataset: 'API Dataset'\n  },\n  executiveSummary: {\n    totalRecords,\n    totalFields: allFields.size,\n    overallQualityScore,\n    completenessScore,\n    consistencyScore,\n    uniquenessScore: +uniquenessScore.toFixed(2),\n    validityScore,\n    criticalFieldsCount: criticalFields.length,\n    inconsistentFields: inconsistentFields.length,\n    duplicateRecords: duplicateCount\n  },\n  detailedMetrics: {\n    attributeCompleteness,\n    statistical: statisticalMetrics,\n    consistency: consistencyMetrics,\n    uniqueness: uniquenessMetrics,\n    structural: {\n      maxNestingDepth: structure.maxDepth,\n      totalFields: allFields.size,\n      simpleFieldsCount: simpleFields.length,\n      nestedFieldsCount: nestedFields.length,\n      arrayFieldsCount: arrayFields.length,\n      objectFieldsCount: structure.objectCount\n    }\n  },\n  insights: {\n    criticalFields: criticalFields.map(f => f.field),\n    inconsistentFields: inconsistentFields,\n    topMissingFields: attributeCompleteness\n      .sort((a, b) => a.completeness - b.completeness)\n      .slice(0, 10)\n      .map(f => ({ field: f.field, completeness: f.completeness }))\n  }\n};\n\n// ============================================================================\n// STEP 8: FINAL FILE REFINEMENT (ROW-BASED FORMAT)\n// ============================================================================\n\nconst rows = [];\nconst push = (Section, Subsection, Metric, Value, Extra = '') => {\n  rows.push({ Section, Subsection, Metric, Value, Extra });\n};\n\nconst fmt = v => (v === null || v === undefined ? '' : v);\nconst pct = v => (v !== null && v !== undefined ? `${v}%` : '');\n\n// Executive Summary\nif (aggregatedReport.executiveSummary) {\n  const meta = aggregatedReport.reportMetadata;\n  const es = aggregatedReport.executiveSummary;\n\n  push('Executive Summary', 'Metadata', 'Generated', meta.generatedAt);\n  push('Executive Summary', 'Metadata', 'Dataset', meta.dataset);\n  push('Executive Summary', 'Metadata', 'Report Type', meta.reportType);\n\n  push('Executive Summary', 'Overview', 'Total Records Analyzed', fmt(es.totalRecords));\n  push('Executive Summary', 'Overview', 'Total Fields Analyzed', fmt(es.totalFields));\n\n  push('Executive Summary', 'Quality Scores', 'Overall Data Quality Score', fmt(es.overallQualityScore));\n  push('Executive Summary', 'Quality Scores', 'Completeness Score', pct(es.completenessScore));\n  push('Executive Summary', 'Quality Scores', 'Consistency Score', pct(es.consistencyScore));\n  push('Executive Summary', 'Quality Scores', 'Uniqueness Score', pct(es.uniquenessScore));\n  push('Executive Summary', 'Quality Scores', 'Validity Score', pct(es.validityScore));\n\n  push('Executive Summary', 'Key Findings', 'Critical Fields (<50% complete)', fmt(es.criticalFieldsCount));\n  push('Executive Summary', 'Key Findings', 'Fields with Inconsistent Types', fmt(es.inconsistentFields));\n  push('Executive Summary', 'Key Findings', 'Duplicate Records Found', fmt(es.duplicateRecords));\n}\n\n// Completeness\nattributeCompleteness\n  .sort((a, b) => a.completeness - b.completeness)\n  .forEach(f => {\n    const sub = f.field || '(field)';\n    push('Completeness', sub, 'Completeness %', pct(f.completeness));\n    push('Completeness', sub, 'Non-Null Count', fmt(f.nonNullCount));\n    push('Completeness', sub, 'Missing Count', fmt(f.missingCount));\n    push('Completeness', sub, 'Data Type', fmt(f.dataType));\n  });\n\n// Statistical\nif (Object.keys(statisticalMetrics).length) {\n  Object.values(statisticalMetrics).forEach(f => {\n    const sub = f.field || '(field)';\n    push('Statistical', sub, 'Count', fmt(f.count));\n    push('Statistical', sub, 'Mean', fmt(f.mean));\n    push('Statistical', sub, 'Median', fmt(f.median));\n    push('Statistical', sub, 'Std Dev', fmt(f.standardDeviation));\n    push('Statistical', sub, 'Min', fmt(f.min));\n    push('Statistical', sub, 'Max', fmt(f.max));\n    push('Statistical', sub, 'IQR', fmt(f.iqr));\n  });\n} else {\n  push('Statistical', '(dataset)', 'Info', 'No numeric fields detected');\n}\n\n// Consistency\nObject.values(consistencyMetrics)\n  .sort((a, b) => (a.consistencyPercentage ?? 0) - (b.consistencyPercentage ?? 0))\n  .forEach(f => {\n    const sub = f.field || '(field)';\n    push('Consistency', sub, 'Dominant Type', fmt(f.dominantType));\n    push('Consistency', sub, 'Data Types Found', Array.isArray(f.dataTypesFound) ? f.dataTypesFound.join(', ') : '');\n    push('Consistency', sub, 'Consistency %', pct(f.consistencyPercentage));\n    push('Consistency', sub, 'Is Consistent', f.isConsistent ? 'Yes' : 'No');\n  });\n\n// Uniqueness\nObject.values(uniquenessMetrics)\n  .sort((a, b) => (a.cardinalityPercentage ?? 0) - (b.cardinalityPercentage ?? 0))\n  .forEach(f => {\n    const sub = f.field || '(field)';\n    push('Uniqueness', sub, 'Total Values', fmt(f.totalValues));\n    push('Uniqueness', sub, 'Unique Values', fmt(f.uniqueValues));\n    push('Uniqueness', sub, 'Duplicate Values', fmt(f.duplicateValues));\n    push('Uniqueness', sub, 'Cardinality %', pct(f.cardinalityPercentage));\n    push('Uniqueness', sub, 'Is Unique', f.isUnique ? 'Yes' : 'No');\n    push('Uniqueness', sub, 'Should Be Unique', f.shouldBeUnique ? 'Yes' : 'No');\n\n    (f.topValues || []).slice(0, 3).forEach((t, i) => {\n      push('Uniqueness', sub, `Top Value ${i + 1}`, t.value, `Count: ${t.count}`);\n    });\n  });\n\n// Insights\n(aggregatedReport.insights.criticalFields || []).forEach((field, i) => {\n  push('Insights', 'Critical Fields', `Field ${i + 1}`, field);\n});\n\n(aggregatedReport.insights.inconsistentFields || []).forEach((f, i) => {\n  push('Insights', 'Inconsistent Fields', `Field ${i + 1}`, f.field || f);\n});\n\n// ============================================================================\n// STEP 9: DATA PREPARATION FOR FRONTEND\n// ============================================================================\n\nconst byMetric = (section, metric) =>\n  rows.find(r => r.Section === section && r.Metric === metric)?.Value ?? 0;\n\n// KPIs\nconst kpis = {\n  qualityScore: +byMetric('Executive Summary', 'Overall Data Quality Score'),\n  totalRecords: +byMetric('Executive Summary', 'Total Records Analyzed'),\n  totalFields: +byMetric('Executive Summary', 'Total Fields Analyzed'),\n  completenessScore: +byMetric('Executive Summary', 'Completeness Score'),\n  consistencyScore: +byMetric('Executive Summary', 'Consistency Score'),\n  uniquenessScore: +byMetric('Executive Summary', 'Uniqueness Score'),\n  validityScore: +byMetric('Executive Summary', 'Validity Score'),\n  criticalFields: +byMetric('Executive Summary', 'Critical Fields (<50% complete)')\n};\n\n// Top Missing Fields\nconst topMissingFields = rows\n  .filter(r => r.Section === 'Completeness' && r.Metric === 'Completeness %')\n  .map(r => ({\n    name: r.Subsection,\n    completeness: +r.Value,\n    missing: 100 - (+r.Value)\n  }))\n  .sort((a, b) => a.completeness - b.completeness)\n  .slice(0, 5)\n  .map(r => ({\n    name: r.name,\n    value: +r.missing.toFixed(2)\n  }));\n\n// Quality Radar\nconst qualityScores = [\n  { dimension: 'Completeness', score: kpis.completenessScore },\n  { dimension: 'Consistency', score: kpis.consistencyScore },\n  { dimension: 'Uniqueness', score: kpis.uniquenessScore },\n  { dimension: 'Validity', score: kpis.validityScore }\n];\n\n// Data Type Distribution\nconst dataTypeMap = rows\n  .filter(r => r.Section === 'Completeness' && r.Metric === 'Data Type')\n  .reduce((acc, r) => {\n    acc[r.Value] = (acc[r.Value] || 0) + 1;\n    return acc;\n  }, {});\n\nconst dataTypeDistribution = Object.entries(dataTypeMap).map(([name, value]) => ({\n  name,\n  value\n}));\n\n// Completeness Distribution\nconst completenessBuckets = [\n  { range: '0-20%', min: 0, max: 20 },\n  { range: '21-40%', min: 21, max: 40 },\n  { range: '41-60%', min: 41, max: 60 },\n  { range: '61-80%', min: 61, max: 80 },\n  { range: '81-100%', min: 81, max: 100 }\n];\n\nconst completenessDistribution = completenessBuckets.map(b => ({\n  range: b.range,\n  count: rows.filter(\n    r =>\n      r.Section === 'Completeness' &&\n      r.Metric === 'Completeness %' &&\n      +r.Value >= b.min &&\n      +r.Value <= b.max\n  ).length\n}));\n\n// ============================================================================\n// FINAL OUTPUT\n// ============================================================================\n\nreturn [{\n  json: {\n    kpis,\n    topMissingFields,\n    qualityScores,\n    dataTypeDistribution,\n    completenessDistribution,\n    aggregatedReport,\n    detailedRows: rows\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        -480
+      ],
+      "id": "71e3dc01-a6d9-49ad-91db-d725d209a2d9",
+      "name": "Code in JavaScript",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "feature-test",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -160,
+        -208
+      ],
+      "id": "1debd019-9fe9-4786-a898-b8e7c42b8482",
+      "name": "Webhook",
+      "webhookId": "79203bc5-4872-4f69-ae95-00e159a05adc",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = items.map(i => i.json);\n\nconst byMetric = (section, metric) =>\n  rows.find(r => r.Section === section && r.Metric === metric)?.Value ?? 0;\n\n/* =========================\n   KPIs\n========================= */\nconst kpis = {\n  qualityScore: +byMetric('Executive Summary', 'Overall Data Quality Score'),\n  totalRecords: +byMetric('Executive Summary', 'Total Records Analyzed'),\n  totalFields: +byMetric('Executive Summary', 'Total Fields Analyzed'),\n  completenessScore: +byMetric('Executive Summary', 'Completeness Score'),\n  consistencyScore: +byMetric('Executive Summary', 'Consistency Score'),\n  uniquenessScore: +byMetric('Executive Summary', 'Uniqueness Score'),\n  validityScore: +byMetric('Executive Summary', 'Validity Score'),\n  criticalFields: +byMetric('Executive Summary', 'Critical Fields (<50% complete)')\n};\n\n/* =========================\n   Top Missing Fields (UPDATED!)\n========================= */\nconst topMissingFields = rows\n  .filter(r => r.Section === 'Completeness' && r.Metric === 'Completeness %')\n  .map(r => ({\n    name: r.Subsection,\n    completeness: +r.Value,\n    missing: 100 - (+r.Value)\n  }))\n  .sort((a, b) => a.completeness - b.completeness) // Lowest completeness first\n  .slice(0, 5)\n  .map(r => ({\n    name: r.name,\n    value: +r.missing.toFixed(2)\n  }));\n\n/* =========================\n   Quality Radar\n========================= */\nconst qualityScores = [\n  { dimension: 'Completeness', score: kpis.completenessScore },\n  { dimension: 'Consistency', score: kpis.consistencyScore },\n  { dimension: 'Uniqueness', score: kpis.uniquenessScore },\n  { dimension: 'Validity', score: kpis.validityScore }\n];\n\n/* =========================\n   Data Type Distribution\n========================= */\nconst dataTypeMap = rows\n  .filter(r => r.Section === 'Completeness' && r.Metric === 'Data Type')\n  .reduce((acc, r) => {\n    acc[r.Value] = (acc[r.Value] || 0) + 1;\n    return acc;\n  }, {});\n\nconst dataTypeDistribution = Object.entries(dataTypeMap).map(([name, value]) => ({\n  name,\n  value\n}));\n\n/* =========================\n   Completeness Distribution\n========================= */\nconst completenessBuckets = [\n  { range: '0-20%', min: 0, max: 20 },\n  { range: '21-40%', min: 21, max: 40 },\n  { range: '41-60%', min: 41, max: 60 },\n  { range: '61-80%', min: 61, max: 80 },\n  { range: '81-100%', min: 81, max: 100 }\n];\n\nconst completenessDistribution = completenessBuckets.map(b => ({\n  range: b.range,\n  count: rows.filter(\n    r =>\n      r.Section === 'Completeness' &&\n      r.Metric === 'Completeness %' &&\n      +r.Value >= b.min &&\n      +r.Value <= b.max\n  ).length\n}));\n\n/* =========================\n   OUTPUT\n========================= */\nreturn [{\n  json: {\n    kpis,\n    topMissingFields,\n    qualityScores,\n    dataTypeDistribution,\n    completenessDistribution\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        -96
+      ],
+      "id": "cf1065b6-9cf4-41c9-954e-128f94310a5a",
+      "name": "Data Preparing for Frontend1",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * NORMALIZE INPUT\n * Expecting: aggregated quality report (single item)\n */\nconst report = items[0].json;\n\n/**\n * ROW COLLECTOR\n */\nconst rows = [];\nconst push = (Section, Subsection, Metric, Value, Extra = '') => {\n  rows.push({ Section, Subsection, Metric, Value, Extra });\n};\n\n/**\n * SAFE HELPERS\n */\nconst fmt = v => (v === null || v === undefined ? '' : v);\nconst pct = v => (v !== null && v !== undefined ? `${v}%` : '');\n\n/**\n * =============================\n * EXECUTIVE SUMMARY (CANONICAL)\n * =============================\n */\nif (report.executiveSummary) {\n  const meta = report.reportMetadata || {};\n  const es = report.executiveSummary;\n\n  // ---- METADATA (USED BY DASHBOARD HEADER)\n  push('Executive Summary', 'Metadata', 'Generated', meta.generatedAt || new Date().toISOString());\n  push('Executive Summary', 'Metadata', 'Dataset', meta.dataset || '');\n  push('Executive Summary', 'Metadata', 'Report Type', meta.reportType || '');\n\n  // ---- TOTALS (USED BY KPI CARDS)\n  push('Executive Summary', 'Overview', 'Total Records Analyzed', fmt(es.totalRecords));\n  push('Executive Summary', 'Overview', 'Total Fields Analyzed', fmt(es.totalFields));\n\n  // ---- QUALITY SCORES (USED BY RADAR + KPIs)\n  push('Executive Summary', 'Quality Scores', 'Overall Data Quality Score', fmt(es.overallQualityScore));\n  push('Executive Summary', 'Quality Scores', 'Completeness Score', pct(es.completenessScore));\n  push('Executive Summary', 'Quality Scores', 'Consistency Score', pct(es.consistencyScore));\n  push('Executive Summary', 'Quality Scores', 'Uniqueness Score', pct(es.uniquenessScore));\n  push('Executive Summary', 'Quality Scores', 'Validity Score', pct(es.validityScore));\n\n  // ---- FINDINGS\n  push('Executive Summary', 'Key Findings', 'Critical Fields (<50% complete)', fmt(es.criticalFieldsCount));\n  push('Executive Summary', 'Key Findings', 'Fields with Inconsistent Types', fmt(es.inconsistentFields));\n  push('Executive Summary', 'Key Findings', 'Duplicate Records Found', fmt(es.duplicateRecords));\n}\n\n/**\n * =============================\n * ATTRIBUTE COMPLETENESS (NEW!)\n * =============================\n */\nconst attributeCompleteness = report.detailedMetrics?.attributeCompleteness || [];\nattributeCompleteness\n  .sort((a, b) => a.completeness - b.completeness) // Worst first\n  .forEach(f => {\n    const sub = f.field || '(field)';\n    push('Completeness', sub, 'Completeness %', pct(f.completeness));\n    push('Completeness', sub, 'Non-Null Count', fmt(f.nonNullCount));\n    push('Completeness', sub, 'Missing Count', fmt(f.missingCount));\n    push('Completeness', sub, 'Data Type', fmt(f.dataType));\n  });\n\n/**\n * =============================\n * STATISTICAL\n * =============================\n */\nconst stats = report.detailedMetrics?.statistical || {};\nif (Object.keys(stats).length) {\n  Object.values(stats).forEach(f => {\n    const sub = f.field || '(field)';\n    push('Statistical', sub, 'Count', fmt(f.count));\n    push('Statistical', sub, 'Mean', fmt(f.mean));\n    push('Statistical', sub, 'Median', fmt(f.median));\n    push('Statistical', sub, 'Std Dev', fmt(f.standardDeviation));\n    push('Statistical', sub, 'Min', fmt(f.min));\n    push('Statistical', sub, 'Max', fmt(f.max));\n    push('Statistical', sub, 'IQR', fmt(f.iqr));\n  });\n} else {\n  push('Statistical', '(dataset)', 'Info', 'No numeric fields detected');\n}\n\n/**\n * =============================\n * CONSISTENCY\n * =============================\n */\nconst consistency = report.detailedMetrics?.consistency || {};\nObject.values(consistency)\n  .sort((a, b) => (a.consistencyPercentage ?? 0) - (b.consistencyPercentage ?? 0))\n  .forEach(f => {\n    const sub = f.field || '(field)';\n    push('Consistency', sub, 'Dominant Type', fmt(f.dominantType));\n    push('Consistency', sub, 'Data Types Found', Array.isArray(f.dataTypesFound) ? f.dataTypesFound.join(', ') : '');\n    push('Consistency', sub, 'Consistency %', pct(f.consistencyPercentage));\n    push('Consistency', sub, 'Is Consistent', f.isConsistent ? 'Yes' : 'No');\n  });\n\n/**\n * =============================\n * UNIQUENESS\n * =============================\n */\nconst uniqueness = report.detailedMetrics?.uniqueness || {};\nObject.values(uniqueness)\n  .sort((a, b) => (a.cardinalityPercentage ?? 0) - (b.cardinalityPercentage ?? 0))\n  .forEach(f => {\n    const sub = f.field || '(field)';\n    push('Uniqueness', sub, 'Total Values', fmt(f.totalValues));\n    push('Uniqueness', sub, 'Unique Values', fmt(f.uniqueValues));\n    push('Uniqueness', sub, 'Duplicate Values', fmt(f.duplicateValues));\n    push('Uniqueness', sub, 'Cardinality %', pct(f.cardinalityPercentage));\n    push('Uniqueness', sub, 'Is Unique', f.isUnique ? 'Yes' : 'No');\n    push('Uniqueness', sub, 'Should Be Unique', f.shouldBeUnique ? 'Yes' : 'No');\n\n    (f.topValues || []).slice(0, 3).forEach((t, i) => {\n      push('Uniqueness', sub, `Top Value ${i + 1}`, t.value, `Count: ${t.count}`);\n    });\n  });\n\n/**\n * =============================\n * CRITICAL INSIGHTS\n * =============================\n */\nconst insights = report.insights || {};\n(insights.criticalFields || []).forEach((field, i) => {\n  push('Insights', 'Critical Fields', `Field ${i + 1}`, field);\n});\n\n(insights.inconsistentFields || []).forEach((f, i) => {\n  push('Insights', 'Inconsistent Fields', `Field ${i + 1}`, f.field || f);\n});\n\n/**\n * OUTPUT (row-based for sheets / BI / dashboard)\n */\nreturn rows.map(r => ({ json: r }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        -96
+      ],
+      "id": "cdb9547c-94eb-4301-989f-43272d432b2a",
+      "name": "Final File Refinement",
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * NORMALIZE INPUT\n */\nconst input = items[0].json;\n\n/**\n * SAFE ACCESS HELPERS\n */\nconst num = v => (typeof v === 'number' && isFinite(v) ? v : 0);\n\n/**\n * SCORES (with fallbacks)\n */\nconst completenessScore = num(input.completenessStats?.averageCompleteness);\nconst consistencyScore = num(input.consistencyStats?.overallConsistency);\nconst validityScore = consistencyScore;\n\nconst totalRecords = input.data?.length || 0;\nconst duplicateCount = num(input.uniquenessStats?.duplicateRecordsCount);\n\nconst duplicatePercentage =\n  totalRecords > 0 ? (duplicateCount / totalRecords) * 100 : 0;\n\nconst uniquenessScore = Math.max(0, 100 - duplicatePercentage);\n\n/**\n * OVERALL QUALITY (weighted)\n */\nconst overallQualityScore = +(\n  completenessScore * 0.4 +\n  consistencyScore * 0.3 +\n  uniquenessScore * 0.2 +\n  validityScore * 0.1\n).toFixed(2);\n\n/**\n * AGGREGATED REPORT\n */\nconst aggregatedReport = {\n  reportMetadata: {\n    generatedAt: new Date().toISOString(),\n    reportType: 'Data Quality Assessment',\n    dataset: input.dataset || 'Unknown'\n  },\n  executiveSummary: {\n    totalRecords,\n    totalFields: num(input.completenessStats?.totalFields),\n    overallQualityScore,\n    completenessScore,\n    consistencyScore,\n    uniquenessScore: +uniquenessScore.toFixed(2),\n    validityScore,\n    criticalFieldsCount: num(input.completenessStats?.criticalFieldsCount),\n    inconsistentFields: num(input.consistencyStats?.inconsistentFieldsCount),\n    duplicateRecords: duplicateCount\n  },\n  detailedMetrics: {\n    attributeCompleteness: input.attributeCompleteness || [],\n    statistical: input.statisticalMetrics || {},\n    consistency: input.consistencyMetrics || {},\n    uniqueness: input.uniquenessMetrics || {},\n    structural: input.structuralMetrics || {}\n  },\n  insights: {\n    criticalFields: input.completenessStats?.criticalFields || [],\n    inconsistentFields: input.inconsistentFields || [],\n    topMissingFields: (input.attributeCompleteness || [])\n      .sort((a, b) => a.completeness - b.completeness)\n      .slice(0, 10)\n      .map(f => ({ field: f.field, completeness: f.completeness }))\n  }\n};\n\n/**\n * OUTPUT\n */\nreturn [\n  {\n    json: aggregatedReport\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1504,
+        -304
+      ],
+      "id": "b46e3752-975f-453c-85e9-c51c56431cee",
+      "name": "Aggregate All Metrics",
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * NORMALIZE INPUT\n * Expecting: json.data → array of flat records\n * Optional: json.raw / json.original for structural sampling\n */\nconst input = items[0].json;\nconst records = Array.isArray(input.data) ? input.data : [];\nconst rawRecords = Array.isArray(input.raw)\n  ? input.raw\n  : Array.isArray(input.originalData)\n    ? input.originalData\n    : records;\n\nif (!records.length) {\n  throw new Error('Structure node: No records found in input.data');\n}\n\n/**\n * STRUCTURE ANALYZER (recursive)\n */\nfunction analyzeStructure(obj, depth = 0) {\n  let maxDepth = depth;\n  let objectCount = 0;\n  let arrayCount = 0;\n  let primitiveCount = 0;\n\n  if (!obj || typeof obj !== 'object') {\n    return { maxDepth, objectCount, arrayCount, primitiveCount: 1 };\n  }\n\n  for (const value of Object.values(obj)) {\n    if (value === null || value === undefined) {\n      primitiveCount++;\n    } else if (Array.isArray(value)) {\n      arrayCount++;\n      if (value.length && typeof value[0] === 'object') {\n        const r = analyzeStructure(value[0], depth + 1);\n        maxDepth = Math.max(maxDepth, r.maxDepth);\n        objectCount += r.objectCount;\n        arrayCount += r.arrayCount;\n        primitiveCount += r.primitiveCount;\n      }\n    } else if (typeof value === 'object') {\n      objectCount++;\n      const r = analyzeStructure(value, depth + 1);\n      maxDepth = Math.max(maxDepth, r.maxDepth);\n      objectCount += r.objectCount;\n      arrayCount += r.arrayCount;\n      primitiveCount += r.primitiveCount;\n    } else {\n      primitiveCount++;\n    }\n  }\n\n  return { maxDepth, objectCount, arrayCount, primitiveCount };\n}\n\n/**\n * STRUCTURE METRICS (sample first raw record)\n */\nconst structure =\n  rawRecords.length > 0\n    ? analyzeStructure(rawRecords[0])\n    : { maxDepth: 0, objectCount: 0, arrayCount: 0, primitiveCount: 0 };\n\n/**\n * COLLECT FIELDS\n */\nconst allFields = new Set();\nrecords.forEach(r => Object.keys(r).forEach(k => allFields.add(k)));\n\n/**\n * FIELD CATALOG\n */\nconst fieldCatalog = {};\n\nfor (const field of allFields) {\n  const samples = records\n    .slice(0, 100)\n    .map(r => r[field])\n    .filter(v => v !== null && v !== undefined);\n\n  const sample = samples[0];\n  const isArray = Array.isArray(sample);\n  const isNested = field.includes('.');\n  const dataType = isArray ? 'array' : typeof sample;\n\n  fieldCatalog[field] = {\n    field,\n    fullPath: field,\n    dataType,\n    isNested,\n    isArray,\n    nestingLevel: field.split('.').length - 1,\n    sampleValue:\n      sample !== undefined\n        ? (typeof sample === 'object'\n            ? JSON.stringify(sample).slice(0, 100)\n            : String(sample).slice(0, 100))\n        : 'N/A'\n  };\n}\n\n/**\n * FIELD GROUPING\n */\nconst catalogValues = Object.values(fieldCatalog);\n\nconst simpleFields = catalogValues.filter(f => !f.isNested && !f.isArray);\nconst nestedFields = catalogValues.filter(f => f.isNested);\nconst arrayFields = catalogValues.filter(f => f.isArray);\n\n/**\n * OUTPUT\n */\nreturn [\n  {\n    json: {\n      ...input,\n      structuralMetrics: {\n        maxNestingDepth: structure.maxDepth,\n        totalFields: allFields.size,\n        simpleFieldsCount: simpleFields.length,\n        nestedFieldsCount: nestedFields.length,\n        arrayFieldsCount: arrayFields.length,\n        objectFieldsCount: structure.objectCount\n      },\n      fieldCatalog,\n      fieldsByCategory: {\n        simple: simpleFields,\n        nested: nestedFields,\n        arrays: arrayFields\n      }\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        -96
+      ],
+      "id": "8aacc768-8818-4a1c-b410-6420d93f08e8",
+      "name": "Calculate Structural Metrics",
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * NORMALIZE INPUT\n * Expecting: json.data → array of flat records\n */\nconst input = items[0].json;\nconst records = Array.isArray(input.data) ? input.data : [];\n\nif (!records.length) {\n  throw new Error('Uniqueness node: No records found in input.data');\n}\n\n/**\n * COLLECT FIELDS\n */\nconst allFields = new Set();\nrecords.forEach(r => Object.keys(r).forEach(k => allFields.add(k)));\n\n/**\n * UNIQUENESS METRICS\n */\nconst uniquenessMetrics = {};\n\nfor (const field of allFields) {\n  const values = [];\n  const uniqueSet = new Set();\n\n  for (const record of records) {\n    const v = record[field];\n    if (v === null || v === undefined) continue;\n\n    const normalized =\n      typeof v === 'object' ? JSON.stringify(v) : String(v);\n\n    values.push(normalized);\n    uniqueSet.add(normalized);\n  }\n\n  const totalValues = values.length;\n  const uniqueValues = uniqueSet.size;\n  const duplicateValues = totalValues - uniqueValues;\n  const cardinalityPercentage =\n    totalValues > 0 ? +(uniqueValues / totalValues * 100).toFixed(2) : 0;\n\n  const frequency = {};\n  values.forEach(v => frequency[v] = (frequency[v] || 0) + 1);\n\n  const topValues = Object.entries(frequency)\n    .sort((a, b) => b[1] - a[1])\n    .slice(0, 10)\n    .map(([value, count]) => ({\n      value: value.length > 50 ? value.slice(0, 50) + '...' : value,\n      count,\n      percentage: +(count / totalValues * 100).toFixed(2)\n    }));\n\n  const shouldBeUnique =\n    field.toLowerCase().includes('id') || cardinalityPercentage > 95;\n\n  uniquenessMetrics[field] = {\n    field,\n    totalValues,\n    uniqueValues,\n    duplicateValues,\n    cardinalityPercentage,\n    isUnique: totalValues > 0 && uniqueValues === totalValues,\n    shouldBeUnique,\n    topValues\n  };\n}\n\n/**\n * DUPLICATE RECORD DETECTION\n */\nconst recordMap = new Map();\n\nrecords.forEach((record, idx) => {\n  const key = JSON.stringify(record);\n  if (!recordMap.has(key)) recordMap.set(key, []);\n  recordMap.get(key).push(idx);\n});\n\nconst duplicateRecords = Array.from(recordMap.values())\n  .filter(indices => indices.length > 1);\n\n/**\n * OUTPUT\n */\nreturn [\n  {\n    json: {\n      ...input,\n      uniquenessMetrics,\n      uniquenessStats: {\n        duplicateRecordsCount: duplicateRecords.length,\n        duplicateRecordIndices: duplicateRecords\n      }\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1264,
+        -304
+      ],
+      "id": "519902b9-23a1-4dec-b889-8f74878cd73e",
+      "name": "Calculate Uniqueness Metrics",
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * NORMALIZE INPUT\n * Expecting: json.data → array of flat records\n */\nconst input = items[0].json;\nconst records = Array.isArray(input.data) ? input.data : [];\n\nif (!records.length) {\n  throw new Error('Consistency node: No records found in input.data');\n}\n\n/**\n * COLLECT FIELDS\n */\nconst allFields = new Set();\nrecords.forEach(r => Object.keys(r).forEach(k => allFields.add(k)));\n\n/**\n * CALCULATE CONSISTENCY\n */\nconst consistencyMetrics = {};\n\nfor (const field of allFields) {\n  const typeCounts = {};\n  let nullCount = 0;\n\n  for (const record of records) {\n    const value = record[field];\n\n    if (value === null || value === undefined) {\n      nullCount++;\n      continue;\n    }\n\n    const type = Array.isArray(value) ? 'array' : typeof value;\n    typeCounts[type] = (typeCounts[type] || 0) + 1;\n  }\n\n  const totalNonNull = records.length - nullCount;\n  const types = Object.keys(typeCounts);\n\n  let dominantType = 'unknown';\n  let dominantCount = 0;\n\n  for (const [t, c] of Object.entries(typeCounts)) {\n    if (c > dominantCount) {\n      dominantType = t;\n      dominantCount = c;\n    }\n  }\n\n  const consistencyPercentage =\n    totalNonNull > 0 ? +(dominantCount / totalNonNull * 100).toFixed(2) : 100;\n\n  consistencyMetrics[field] = {\n    field,\n    dataTypesFound: types,\n    dominantType,\n    typeDistribution: typeCounts,\n    consistencyPercentage,\n    isConsistent: types.length <= 1,\n    mixedTypeCount: types.length > 1 ? totalNonNull - dominantCount : 0\n  };\n}\n\n/**\n * OVERALL CONSISTENCY\n */\nconst metricsArray = Object.values(consistencyMetrics);\n\nconst consistentFields = metricsArray.filter(f => f.isConsistent);\nconst inconsistentFields = metricsArray\n  .filter(f => !f.isConsistent)\n  .sort((a, b) => a.consistencyPercentage - b.consistencyPercentage);\n\nconst overallConsistency = +(\n  consistentFields.length / allFields.size * 100\n).toFixed(2);\n\n/**\n * OUTPUT\n */\nreturn [\n  {\n    json: {\n      ...input,\n      consistencyMetrics,\n      consistencyStats: {\n        overallConsistency,\n        consistentFieldsCount: consistentFields.length,\n        inconsistentFieldsCount: inconsistentFields.length\n      },\n      inconsistentFields\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1056,
+        -96
+      ],
+      "id": "d2ca407e-1178-42cb-a912-8cf7a2863326",
+      "name": " Calculate Consistency Metrics",
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * NORMALIZE INPUT\n * Expecting: json.data → array of flat records\n */\nconst input = items[0].json;\nconst records = Array.isArray(input.data) ? input.data : [];\n\nif (!records.length) {\n  throw new Error('Statistics node: No records found in input.data');\n}\n\nconst totalRecords = records.length;\n\n/**\n * COLLECT FIELDS\n */\nconst allFields = new Set();\nrecords.forEach(r => Object.keys(r).forEach(k => allFields.add(k)));\n\n/**\n * STAT HELPERS\n */\nconst mean = v => v.length ? v.reduce((s, x) => s + x, 0) / v.length : 0;\n\nconst median = v => {\n  if (!v.length) return 0;\n  const s = [...v].sort((a, b) => a - b);\n  const m = Math.floor(s.length / 2);\n  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;\n};\n\nconst variance = v => {\n  if (!v.length) return 0;\n  const avg = mean(v);\n  return v.reduce((s, x) => s + (x - avg) ** 2, 0) / v.length;\n};\n\nconst stdDev = v => Math.sqrt(variance(v));\n\nconst quartiles = v => {\n  if (!v.length) return { q1: 0, q2: 0, q3: 0 };\n  const s = [...v].sort((a, b) => a - b);\n  return {\n    q1: s[Math.floor(s.length * 0.25)] || 0,\n    q2: s[Math.floor(s.length * 0.5)] || 0,\n    q3: s[Math.floor(s.length * 0.75)] || 0\n  };\n};\n\nconst mode = v => {\n  if (!v.length) return null;\n  const freq = {};\n  v.forEach(x => freq[x] = (freq[x] || 0) + 1);\n  return +Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0];\n};\n\n/**\n * DETECT DATA TYPE\n */\nconst detectType = values => {\n  const nonNull = values.filter(v => v != null);\n  if (!nonNull.length) return 'unknown';\n  \n  const sample = nonNull[0];\n  if (typeof sample === 'number') return 'number';\n  if (typeof sample === 'boolean') return 'boolean';\n  if (Array.isArray(sample)) return 'array';\n  if (typeof sample === 'object') return 'object';\n  return 'string';\n};\n\n/**\n * CALCULATE COMPLETENESS FOR ALL FIELDS\n */\nconst attributeCompleteness = [];\n\nfor (const field of allFields) {\n  const values = records.map(r => r[field]);\n  const nonNullCount = values.filter(v => v != null && v !== '').length;\n  const completeness = (nonNullCount / totalRecords * 100).toFixed(2);\n  \n  attributeCompleteness.push({\n    field,\n    completeness: +completeness,\n    nonNullCount,\n    missingCount: totalRecords - nonNullCount,\n    dataType: detectType(values)\n  });\n}\n\n// Sort by completeness (lowest first to highlight issues)\nattributeCompleteness.sort((a, b) => a.completeness - b.completeness);\n\n/**\n * CALCULATE NUMERIC STATISTICS\n */\nconst statisticalMetrics = {};\nlet numericFieldCount = 0;\n\nfor (const field of allFields) {\n  const values = records\n    .map(r => r[field])\n    .filter(v => typeof v === 'number' && isFinite(v));\n\n  if (!values.length) continue;\n\n  numericFieldCount++;\n\n  const avg = mean(values);\n  const std = stdDev(values);\n  const q = quartiles(values);\n  const min = Math.min(...values);\n  const max = Math.max(...values);\n\n  statisticalMetrics[field] = {\n    field,\n    count: values.length,\n    mean: +avg.toFixed(2),\n    median: +median(values).toFixed(2),\n    mode: mode(values),\n    variance: +variance(values).toFixed(2),\n    standardDeviation: +std.toFixed(2),\n    coefficientOfVariation: avg ? +(std / avg * 100).toFixed(2) : 0,\n    min: +min.toFixed(2),\n    max: +max.toFixed(2),\n    range: +(max - min).toFixed(2),\n    q1: +q.q1.toFixed(2),\n    q2: +q.q2.toFixed(2),\n    q3: +q.q3.toFixed(2),\n    iqr: +(q.q3 - q.q1).toFixed(2)\n  };\n}\n\n/**\n * COMPLETENESS SUMMARY\n */\nconst avgCompleteness = +(\n  attributeCompleteness.reduce((sum, f) => sum + f.completeness, 0) / \n  attributeCompleteness.length\n).toFixed(2);\n\nconst criticalFields = attributeCompleteness.filter(f => f.completeness < 50);\n\n/**\n * OUTPUT\n */\nreturn [\n  {\n    json: {\n      ...input,\n      // NEW: Field-level completeness\n      attributeCompleteness,\n      completenessStats: {\n        totalFields: allFields.size,\n        averageCompleteness: avgCompleteness,\n        criticalFieldsCount: criticalFields.length,\n        criticalFields: criticalFields.map(f => f.field)\n      },\n      // EXISTING: Numeric statistics\n      statisticalMetrics,\n      statisticalStats: {\n        numericFieldCount,\n        totalFieldsAnalyzed: allFields.size,\n        numericFieldPercentage: +(\n          numericFieldCount / allFields.size * 100\n        ).toFixed(2),\n        fieldsAnalyzed: Object.keys(statisticalMetrics)\n      }\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        -320
+      ],
+      "id": "ee3cbdcc-84c9-4eca-804f-795a30351c56",
+      "name": "Calculate Statistical Metrics",
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * STEP 1: Normalize input\n */\nconst input = items[0].json;\nconst records = Array.isArray(input.data) ? input.data : [];\n\nif (!records.length) {\n  throw new Error('Completeness node: No records found in input.data');\n}\n\nconst totalRecords = records.length;\n\n/**\n * STEP 2: Collect fields\n */\nconst allFields = new Set();\nrecords.forEach(r => Object.keys(r).forEach(k => allFields.add(k)));\n\n/**\n * STEP 3: Missing checker\n */\nfunction isMissing(value) {\n  return (\n    value === null ||\n    value === undefined ||\n    (typeof value === 'string' && value.trim() === '')\n  );\n}\n\n/**\n * STEP 4: Per-field completeness\n */\nconst completenessByField = {};\n\nfor (const field of allFields) {\n  let present = 0;\n  let missing = 0;\n  let nullCount = 0;\n  let undefinedCount = 0;\n  let emptyStringCount = 0;\n\n  for (const record of records) {\n    const v = record[field];\n\n    if (v === null) {\n      nullCount++;\n      missing++;\n    } else if (v === undefined) {\n      undefinedCount++;\n      missing++;\n    } else if (typeof v === 'string' && v.trim() === '') {\n      emptyStringCount++;\n      missing++;\n    } else {\n      present++;\n    }\n  }\n\n  completenessByField[field] = {\n    field,\n    totalRecords,\n    presentCount: present,\n    missingCount: missing,\n    presentPercentage: +(present / totalRecords * 100).toFixed(2),\n    missingPercentage: +(missing / totalRecords * 100).toFixed(2),\n    breakdown: {\n      nullCount,\n      undefinedCount,\n      emptyStringCount\n    }\n  };\n}\n\n/**\n * STEP 5: Overall completeness\n */\nconst totalCells = totalRecords * allFields.size;\nconst totalPresent = Object.values(completenessByField)\n  .reduce((s, f) => s + f.presentCount, 0);\n\nconst overallCompleteness = +(totalPresent / totalCells * 100).toFixed(2);\n\n/**\n * STEP 6: Insights\n */\nconst metricsArray = Object.values(completenessByField);\n\nconst fieldsWithMissing = metricsArray\n  .filter(f => f.missingCount > 0)\n  .sort((a, b) => b.missingPercentage - a.missingPercentage);\n\nconst completeFields = metricsArray\n  .filter(f => f.missingCount === 0);\n\n/**\n * STEP 7: Output\n */\nreturn [\n  {\n    json: {\n      ...input,\n      completeness: {\n        overallCompleteness,\n        totalRecords,\n        totalFields: allFields.size,\n        totalCells,\n        totalPresentCells: totalPresent,\n        totalMissingCells: totalCells - totalPresent,\n        fieldsWithMissingCount: fieldsWithMissing.length,\n        fullyCompleteFieldsCount: completeFields.length\n      },\n      completenessByField,\n      fieldsWithMissing,\n      completeFields\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        816,
+        -96
+      ],
+      "id": "0ed9cd9c-52a1-4d84-8f27-59855f32749e",
+      "name": "Calculate Completeness Metrics",
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// STEP 1: Collect all incoming JSON payloads\nlet records = [];\n\nfor (const item of items) {\n  const payload = item.json;\n\n  if (Array.isArray(payload)) {\n    records.push(...payload);\n  } else if (typeof payload === 'object' && payload !== null) {\n    // Try to auto-detect array-like fields\n    const arrayField = Object.values(payload).find(v => Array.isArray(v));\n    \n    if (arrayField) {\n      records.push(...arrayField);\n    } else {\n      // Single object → treat as one record\n      records.push(payload);\n    }\n  }\n}\n\n// Safety check\nif (!records.length) {\n  throw new Error('No usable records found in API response');\n}\n\n\n// STEP 2: Flatten helper\n\nfunction flattenObject(obj, prefix = '') {\n  const result = {};\n\n  for (const [key, value] of Object.entries(obj)) {\n    const newKey = prefix ? `${prefix}.${key}` : key;\n\n    if (value === null || value === undefined) {\n      result[newKey] = null;\n    } else if (Array.isArray(value)) {\n      result[newKey] = value;\n    } else if (typeof value === 'object') {\n      Object.assign(result, flattenObject(value, newKey));\n    } else {\n      result[newKey] = value;\n    }\n  }\n\n  return result;\n}\n\n// STEP 3: Flatten all records\nconst flattenedData = records.map(r => flattenObject(r));\n\n// STEP 4: Collect all unique fields\nconst allFields = new Set();\nfor (const record of flattenedData) {\n  Object.keys(record).forEach(f => allFields.add(f));\n}\n\n// STEP 5: Output normalized result\n\nreturn [\n  {\n    json: {\n      rawRecordsCount: records.length,\n      flattenedRecordsCount: flattenedData.length,\n      fields: Array.from(allFields),\n      data: flattenedData\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        -320
+      ],
+      "id": "68b3ae5f-a5f2-4e8b-bab7-73d12e514164",
+      "name": "Extract & Flatten Data",
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.body.apiUrl }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "="
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {}
+          },
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        80,
+        -208
+      ],
+      "id": "fd89c2b5-06d0-489c-b64c-8956c09239e6",
+      "name": "HTTP Request",
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {}
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        2544,
+        -736
+      ],
+      "id": "ac88c291-fd2e-4244-b180-ebe5fec61968",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "url": "=https://tourism.api.opendatahub.testingmachine.eu/v1/MetaData?pagesize=1000&origin=interactive-dashboard",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2768,
+        -736
+      ],
+      "id": "eeb41197-ce0b-4b4b-9842-a58f6c0f0d84",
+      "name": "Fetch Known Datasets"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract dataset URLs from metadata\nconst datasets = [];\n\nfor (const item of $input.all()) {\n  const data = item.json;\n  \n  // Extract Items array from metadata response\n  const items = data.Items || data.items || [];\n  \n  for (const dataset of items) {\n    if (dataset.ApiUrl || dataset.apiUrl) {\n      datasets.push({\n        url: dataset.ApiUrl || dataset.apiUrl,\n        name: dataset.Shortname || dataset.shortname || dataset.Id || 'Unknown'\n      });\n    }\n  }\n}\n\nreturn datasets.map(d => ({ json: d }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2944,
+        -736
+      ],
+      "id": "faa50a29-c21b-41da-b961-885c7bbeb962",
+      "name": "Extract Dataset URLs"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7928bcf3-3f85-4fe8-95c1-2e545cdeaced",
+              "name": "url",
+              "value": "={{ $json.url }}",
+              "type": "string"
+            },
+            {
+              "id": "596e218a-ee84-4a36-96c0-bc0f369139c8",
+              "name": "name",
+              "value": "={{ $json.name }}",
+              "type": "string"
+            },
+            {
+              "id": "page",
+              "name": "page",
+              "value": 1,
+              "type": "number"
+            },
+            {
+              "id": "hasMore",
+              "name": "hasMore",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "allRecords",
+              "name": "allRecords",
+              "value": "=[]",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3584,
+        -720
+      ],
+      "id": "809e0784-8b1a-432b-8533-42ce5f18dc43",
+      "name": "Initialize Variables"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.hasMore }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              },
+              "id": "5d3631a0-ba19-4d1d-a7f6-5b21ad1474d3"
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [
+        3792,
+        -720
+      ],
+      "id": "b548429b-6fe1-4899-86e1-3598cf9d7962",
+      "name": "Has More Pages?"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pagenumber",
+              "value": "={{ $json.page }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ $json.token ? 'Bearer ' + $json.token : undefined }}"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {}
+          },
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        4016,
+        -832
+      ],
+      "id": "79e5f0a6-867a-4334-a4a6-4ba3d6a4f7dc",
+      "name": "Fetch Page",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get current API response\nconst currentData = $input.first().json;\n\n// Get loop state from \"Has More Pages?\" node (the loop entry point)\nconst loopState = $('Has More Pages?').first().json;\n\n// Extract records from response\nlet newRecords = [];\nif (Array.isArray(currentData)) {\n  newRecords = currentData;\n} else if (currentData.Items) {\n  newRecords = currentData.Items;\n} else if (currentData.items) {\n  newRecords = currentData.items;\n}\n\n// Combine with existing (from loop state, NOT Initialize Variables)\nconst allRecords = [...(loopState.allRecords || []), ...newRecords];\n\n// Check if more pages exist\nconst totalResults = currentData.TotalResults || currentData.totalResults || 0;\nconst currentPage = loopState.page || 1;\nconst hasMore = allRecords.length < totalResults && newRecords.length > 0;\n\nreturn [{\n  json: {\n    url: loopState.url,        // From loop state\n    name: loopState.name,      // From loop state\n    page: currentPage + 1,\n    allRecords,\n    hasMore\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4240,
+        -832
+      ],
+      "id": "3fbd7f2f-014f-4c65-94f0-54fdb6c0b57b",
+      "name": "Accumulate Records"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Use the exact same analysis logic from your existing workflow\n// Copy-pasted from \"Dashboard Creation\" node\n\nlet rawRecords = $json.allRecords;\n\nif (!rawRecords.length) {\n  return [{ json: { error: 'No records found', url: $json.url } }];\n}\n\nfunction flattenObject(obj, prefix = '') {\n  const result = {};\n  for (const [key, value] of Object.entries(obj)) {\n    const newKey = prefix ? `${prefix}.${key}` : key;\n    if (value === null || value === undefined) {\n      result[newKey] = null;\n    } else if (Array.isArray(value)) {\n      result[newKey] = value;\n    } else if (typeof value === 'object') {\n      Object.assign(result, flattenObject(value, newKey));\n    } else {\n      result[newKey] = value;\n    }\n  }\n  return result;\n}\n\nconst flattenedData = rawRecords.map(r => flattenObject(r));\nconst totalRecords = flattenedData.length;\n\nconst completenessByField = {};\nconst consistencyMetrics = {};\nconst statisticalMetrics = {};\nconst allFields = new Set();\n\nfor (const record of flattenedData) {\n  Object.keys(record).forEach(f => allFields.add(f));\n}\n\nfor (const field of allFields) {\n  let presentCount = 0;\n  let missingCount = 0;\n  const typeCounts = {};\n  const numericValues = [];\n\n  for (const record of flattenedData) {\n    const v = record[field];\n    \n    if (v === null || v === undefined || (typeof v === 'string' && v.trim() === '')) {\n      missingCount++;\n    } else {\n      presentCount++;\n      const type = Array.isArray(v) ? 'array' : typeof v;\n      typeCounts[type] = (typeCounts[type] || 0) + 1;\n      \n      if (type === 'number' && isFinite(v)) {\n        numericValues.push(v);\n      }\n    }\n  }\n\n  const presentPercentage = Number((presentCount / totalRecords * 100).toFixed(2));\n  const missingPercentage = Number((missingCount / totalRecords * 100).toFixed(2));\n  const types = Object.keys(typeCounts);\n  const dominantType = types[0] || 'unknown';\n  const dominantCount = Math.max(...Object.values(typeCounts), 0);\n  const totalNonNull = presentCount;\n  const consistencyPercentage = totalNonNull > 0 ? Number((dominantCount / totalNonNull * 100).toFixed(2)) : 100;\n  const isConsistent = types.length <= 1;\n\n  completenessByField[field] = {\n    field,\n    presentPercentage,\n    missingPercentage,\n    presentCount,\n    missingCount,\n    dataType: dominantType\n  };\n\n  consistencyMetrics[field] = {\n    field,\n    dominantType,\n    dataTypesFound: types,\n    consistencyPercentage,\n    isConsistent\n  };\n\n  if (numericValues.length > 0) {\n    const sum = numericValues.reduce((s, x) => s + x, 0);\n    const mean = sum / numericValues.length;\n    const min = Math.min(...numericValues);\n    const max = Math.max(...numericValues);\n    statisticalMetrics[field] = {\n      field,\n      mean: Number(mean.toFixed(2)),\n      min: Number(min.toFixed(2)),\n      max: Number(max.toFixed(2)),\n      count: numericValues.length\n    };\n  }\n}\n\nconst totalCells = totalRecords * allFields.size;\nconst totalPresentCount = Object.values(completenessByField).reduce((s, f) => s + f.presentCount, 0);\nconst overallCompleteness = Number((totalPresentCount / totalCells * 100).toFixed(2));\nconst criticalFieldsCount = Object.values(completenessByField).filter(f => f.presentPercentage < 50).length;\nconst consistentFieldsCount = Object.values(consistencyMetrics).filter(f => f.isConsistent).length;\nconst overallConsistency = Number((consistentFieldsCount / allFields.size * 100).toFixed(2));\n\nconst recordMap = new Map();\nfor (const record of flattenedData) {\n  const key = JSON.stringify(record);\n  recordMap.set(key, (recordMap.get(key) || 0) + 1);\n}\nconst duplicateRecords = Array.from(recordMap.values()).filter(c => c > 1).length;\nconst uniquenessScore = Number(Math.max(0, 100 - ((duplicateRecords / totalRecords) * 100)).toFixed(2));\n\nconst overallQualityScore = Number((\n  overallCompleteness * 0.4 +\n  overallConsistency * 0.3 +\n  uniquenessScore * 0.2 +\n  overallConsistency * 0.1\n).toFixed(2));\n\nconst completenessArray = Object.values(completenessByField);\nconst fieldCompleteness = completenessArray\n  .sort((a, b) => b.missingPercentage - a.missingPercentage)\n  .map(f => ({\n    name: f.field,\n    completeness: f.presentPercentage,\n    missing: f.missingPercentage,\n    dataType: f.dataType,\n    presentCount: f.presentCount,\n    missingCount: f.missingCount\n  }));\n\nconst kpis = {\n  qualityScore: overallQualityScore,\n  totalRecords,\n  totalFields: allFields.size,\n  completenessScore: overallCompleteness,\n  consistencyScore: overallConsistency,\n  uniquenessScore,\n  validityScore: overallConsistency,\n  criticalFields: criticalFieldsCount\n};\n\nconst qualityScores = [\n  { dimension: 'Completeness', score: overallCompleteness },\n  { dimension: 'Consistency', score: overallConsistency },\n  { dimension: 'Uniqueness', score: uniquenessScore },\n  { dimension: 'Validity', score: overallConsistency }\n];\n\nconst typeCountMap = {};\nfor (const metric of Object.values(consistencyMetrics)) {\n  typeCountMap[metric.dominantType] = (typeCountMap[metric.dominantType] || 0) + 1;\n}\nconst dataTypeDistribution = Object.entries(typeCountMap).map(([name, value]) => ({ name, value }));\n\nconst bucketCounts = [0, 0, 0, 0, 0];\nfor (const f of completenessArray) {\n  const pct = f.presentPercentage;\n  if (pct <= 20) bucketCounts[0]++;\n  else if (pct <= 40) bucketCounts[1]++;\n  else if (pct <= 60) bucketCounts[2]++;\n  else if (pct <= 80) bucketCounts[3]++;\n  else bucketCounts[4]++;\n}\n\nconst completenessDistribution = [\n  { range: '0-20%', count: bucketCounts[0] },\n  { range: '21-40%', count: bucketCounts[1] },\n  { range: '41-60%', count: bucketCounts[2] },\n  { range: '61-80%', count: bucketCounts[3] },\n  { range: '81-100%', count: bucketCounts[4] }\n];\n\nreturn [{\n  json: {\n    url: $json.url,\n    name: $json.name,\n    cachedAt: new Date().toISOString(),\n    results: {\n      kpis,\n      fieldCompleteness,\n      qualityScores,\n      dataTypeDistribution,\n      completenessDistribution\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4016,
+        -624
+      ],
+      "id": "ef17b8c0-245c-454b-b6eb-00f45e1ab37e",
+      "name": "Run Analysis"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO analysis_cache (dataset_url, dataset_name, analysis_results, created_at)\nVALUES ($1, $2, $3, NOW())\nON CONFLICT (dataset_url)\nDO UPDATE SET\n  analysis_results = EXCLUDED.analysis_results,\n  dataset_name = EXCLUDED.dataset_name,\n  created_at = NOW()",
+        "options": {
+          "queryReplacement": "={{ [$json.url, $json.name, JSON.stringify($json.results)] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4240,
+        -624
+      ],
+      "id": "7b1e0a50-9cdb-402a-9e4a-07b5712f60b4",
+      "name": "Store in Cache",
+      "credentials": {
+        "postgres": {
+          "id": "JQYMyg7G7yJB9jDy",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Midnight Cache Generator\n\nThis workflow:\n1. Runs daily at midnight (12 AM)\n2. Fetches all known datasets from metadata\n3. For each dataset:\n   - Fetches all pages\n   - Runs quality analysis\n   - Stores results in PostgreSQL cache\n4. Cache is cleared daily (see cleanup workflow)\n\n**Note:** Replace PostgreSQL node with your storage method:\n- Use Write Binary File for file-based cache\n- Use Redis for key-value storage\n- Keep PostgreSQL for database approach",
+        "height": 404,
+        "width": 384,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2096,
+        -848
+      ],
+      "id": "1c471c73-ed8c-4a49-af15-b91bc8a10df7",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT dataset_url, dataset_name, analysis_results, created_at\nFROM analysis_cache\nWHERE dataset_url = $1\nAND created_at > NOW() - INTERVAL '24 hours'",
+        "options": {
+          "queryReplacement": "={{ [$('Webhook2').item.json.query.url] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2800,
+        -256
+      ],
+      "id": "7eca4b58-861a-42ea-a49d-ac34844a666d",
+      "name": "Check Cache",
+      "credentials": {
+        "postgres": {
+          "id": "JQYMyg7G7yJB9jDy",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.dataset_url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [
+        3024,
+        -256
+      ],
+      "id": "ff31671c-ed1d-42ea-9446-321160394852",
+      "name": "Cache Exists?"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"cached\": true, \"url\": $json.dataset_url, \"cachedAt\": $json.created_at, \"results\": $json.analysis_results } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3232,
+        -352
+      ],
+      "id": "d165017d-72fa-4d8d-aa51-3d8d65f66179",
+      "name": "Return Cached"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"cached\": false } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3232,
+        -160
+      ],
+      "id": "aa092e09-b780-4100-a391-1f8330f2b59e",
+      "name": "Return Not Cached"
+    },
+    {
+      "parameters": {
+        "content": "## Cache Read Endpoint\n\nProvides cached analysis results for dashboard.\n\n**Endpoint:** GET /webhook/analysis-cache?url={datasetUrl}\n\n**Response if cached:**\n```json\n{\n  \"cached\": true,\n  \"url\": \"...\",\n  \"cachedAt\": \"2026-02-11T00:15:23Z\",\n  \"results\": { /* full analysis */ }\n}\n```\n\n**Response if not cached:**\n```json\n{\n  \"cached\": false\n}\n```",
+        "height": 492,
+        "width": 380,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2096,
+        -432
+      ],
+      "id": "7a9b5dbe-1009-4b90-8075-e5c87ecd235e",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "path": "analysis-cache",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        2576,
+        -256
+      ],
+      "id": "d61bfdaa-e8b7-4414-9772-6cc0b19d06a7",
+      "name": "Webhook2",
+      "webhookId": "dcfafcca-17bd-41e0-8f02-514bcdc3ea64"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 23,
+              "triggerAtMinute": 50
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        2592,
+        176
+      ],
+      "id": "f232df4f-bf5a-47f5-b0a5-a9b49e7befe9",
+      "name": "Schedule Trigger (12:01 AM)"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM analysis_cache\nWHERE created_at < NOW() - INTERVAL '24 hours'",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2816,
+        176
+      ],
+      "id": "b84ed69c-a58b-4637-b384-b2f7ca6abc03",
+      "name": "Clear Old Cache",
+      "credentials": {
+        "postgres": {
+          "id": "JQYMyg7G7yJB9jDy",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Daily Cache Cleanup\n\nRuns at 12:01 AM (1 minute after cache generation)\nDeletes any cache entries older than 24 hours.\n\nThis keeps storage minimal and ensures\nonly today's data is available.",
+        "height": 240,
+        "width": 372,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2096,
+        96
+      ],
+      "id": "a10cb46a-6026-4385-bea9-dd78da5e0998",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "options": {
+          "reset": true
+        }
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        3248,
+        -736
+      ],
+      "id": "bfe6a5a2-fc56-4422-a8d3-b51a8fdb61ac",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.body.apiUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $json.body.token ? 'Bearer ' + $json.body.token : undefined }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2832,
+        480
+      ],
+      "id": "a243d646-f729-463b-8af3-39602908b34c",
+      "name": "HTTP Request Proxy"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "data-quality-dashboard",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        2576,
+        480
+      ],
+      "id": "e6ad9281-f166-48d1-99f8-9e252559e391",
+      "name": "Webhook3",
+      "webhookId": "d8f5352d-4993-4505-a489-d9503c00e0c7"
+    },
+    {
+      "parameters": {
+        "content": "## Proxy Call Local Analysis \nGet Request to Apis"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        2096,
+        384
+      ],
+      "typeVersion": 1,
+      "id": "9e89ce8f-b6f3-4fb5-80c9-91d8b4b4e95e",
+      "name": "Sticky Note3"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Dashboard Creation": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request1": {
+      "main": [
+        [
+          {
+            "node": "Dashboard Creation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook1": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Final File Refinement": {
+      "main": [
+        [
+          {
+            "node": "Data Preparing for Frontend1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate All Metrics": {
+      "main": [
+        [
+          {
+            "node": "Final File Refinement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Structural Metrics": {
+      "main": [
+        [
+          {
+            "node": "Aggregate All Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Uniqueness Metrics": {
+      "main": [
+        [
+          {
+            "node": "Calculate Structural Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    " Calculate Consistency Metrics": {
+      "main": [
+        [
+          {
+            "node": "Calculate Uniqueness Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Statistical Metrics": {
+      "main": [
+        [
+          {
+            "node": " Calculate Consistency Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Completeness Metrics": {
+      "main": [
+        [
+          {
+            "node": "Calculate Statistical Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract & Flatten Data": {
+      "main": [
+        [
+          {
+            "node": "Calculate Completeness Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Prod",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Known Datasets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Known Datasets": {
+      "main": [
+        [
+          {
+            "node": "Extract Dataset URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Dataset URLs": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Variables": {
+      "main": [
+        [
+          {
+            "node": "Has More Pages?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has More Pages?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Page": {
+      "main": [
+        [
+          {
+            "node": "Accumulate Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accumulate Records": {
+      "main": [
+        [
+          {
+            "node": "Has More Pages?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Analysis": {
+      "main": [
+        [
+          {
+            "node": "Store in Cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Cache": {
+      "main": [
+        [
+          {
+            "node": "Cache Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Exists?": {
+      "main": [
+        [
+          {
+            "node": "Return Cached",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Not Cached",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook2": {
+      "main": [
+        [
+          {
+            "node": "Check Cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger (12:01 AM)": {
+      "main": [
+        [
+          {
+            "node": "Clear Old Cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Initialize Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Cache": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook3": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request Proxy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "fbcfe6d8-f85b-4ff2-bb93-619876250608",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "3991d8c5b323cd05ec2fb7997e5186e9456dd35c01d2390955597082dec7a247"
+  },
+  "id": "9XnWGn0vLCVzj34u",
+  "tags": []
+}

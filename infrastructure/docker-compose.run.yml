@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  n8n:
+    image: ${DOCKER_IMAGE}:${DOCKER_TAG}
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT}:5678"    
+    environment:
+      # Database
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: ${PG_N8N_HOST}
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${PG_N8N_DB}
+      DB_POSTGRESDB_USER: ${PG_N8N_USER}
+      DB_POSTGRESDB_PASSWORD: ${PG_N8N_PASSWORD}
+
+      # n8n basics
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://${N8N_HOST}/
+
+      # Security
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRIPTION_KEY}
+
+      # Import Workflow
+      N8N_IMPORT: /home/node/workflows/Daily-Cache-Cleanup.json
+
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n-workflows:/home/node/workflows
+
+volumes:
+  n8n_data:

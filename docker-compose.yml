@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: NOI Techpark <digital@noi.bz.it>
+#
+# SPDX-License-Identifier: CC0-1.0
+
+services:
+  n8n:
+    image: n8nio/n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    env_file:
+      - .env
+    environment:
+      # Database
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: ${PG_N8N_HOST}
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${PG_N8N_DB}
+      DB_POSTGRESDB_USER: ${PG_N8N_USER}
+      DB_POSTGRESDB_PASSWORD: ${PG_N8N_PASSWORD}
+      DB_POSTGRESDB_SSL: "true"
+      DB_POSTGRESDB_SSL_CA: /home/node/certs/global-bundle.pem
+      DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED: "false"
+
+      # n8n basics
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: https://${N8N_HOST}/
+
+      N8N_IMPORT: /home/node/workflows/Daily-Cache-Cleanup.json
+
+      # Security
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRIPTION_KEY}
+
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n-workflows:/home/node/workflows
+      - ~/n8n/rds:/home/node/certs
+    
+volumes: 
+  n8n_data:

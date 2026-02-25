@@ -1,0 +1,8 @@
+version: '3.8'
+
+services:
+  n8n:
+    image: ${DOCKER_IMAGE}:${DOCKER_TAG}
+    build:
+      context: .
+      dockerfile: ../infrastructure/docker/dockerfile
