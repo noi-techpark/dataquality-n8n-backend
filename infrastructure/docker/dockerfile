@@ -1,7 +1,10 @@
 # Dockerfile
 FROM n8nio/n8n:latest
 
-#USER root
-#USER node
+COPY ../n8n-workflows/Daily-Cache-Cleanup.json /home/node/workflows/Daily-Cache-Cleanup.json
 
-COPY n8n-workflows/Daily-Cache-Cleanup.json /home/node/workflows/
+# Copy and set entrypoint
+#COPY entrypoint.sh /entrypoint.sh
+#RUN chmod +x /entrypoint.sh
+
+#ENTRYPOINT ["/entrypoint.sh"]
